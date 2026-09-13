@@ -1,0 +1,342 @@
+package org.firstinspires.ftc.teamcode;
+
+import com.qualcomm.hardware.bosch.BNO055IMU;
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.VoltageSensor;
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.AxesOrder;
+import org.firstinspires.ftc.robotcore.external.navigation.AxesReference;
+import org.firstinspires.ftc.robotcore.external.navigation.Orientation;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+@TeleOp(name = "Arcieri Dashboard", group = "Test")
+public class ArcieriDashboard extends OpMode {
+
+    // hardware
+    private DcMotor leftFront, rightFront, leftRear, rightRear;
+    private VoltageSensor battery;
+    private BNO055IMU imu;
+
+    // odometry
+    private static final double WHEEL_DIAMETER_INCHES = 4.0;
+    private static final double TICKS_PER_REV = 1120;
+    private static final double TRACK_WIDTH_INCHES = 14.0;
+    private static final double WHEEL_BASE_INCHES = 14.0;
+    private static final double INCHES_PER_TICK = (Math.PI * WHEEL_DIAMETER_INCHES) / TICKS_PER_REV;
+
+    // robot state
+    private double robotX = 0.0, robotY = 0.0, robotHeading = 0.0;
+
+    private double lastEncoderRotate = 0.0;
+
+    // prev encoder values
+    private int prevLF = 0, prevRF = 0, prevLR = 0, prevRR = 0;
+    private boolean firstLoop = true;
+
+    // pid heading
+    private double headingKp = 0.02, headingKi = 0.0001, headingKd = 0.005;
+    private double headingIntegral = 0;
+    private double lastHeadingError = 0;
+    private long lastTime = 0;
+
+    // path following
+    private final List<double[]> waypoints = new ArrayList<>();
+    private int currentWaypointIndex = 0;
+    private boolean followingPath = false;
+
+    private RobotWebSocketServer wsServer;
+
+    @Override
+    public void init() {
+        leftFront = hardwareMap.dcMotor.get("front_Left_drive");
+        rightFront = hardwareMap.dcMotor.get("front_Right_drive");
+        leftRear = hardwareMap.dcMotor.get("back_Left_drive");
+        rightRear = hardwareMap.dcMotor.get("back_Right_drive");
+
+        rightFront.setDirection(DcMotor.Direction.REVERSE);
+        rightRear.setDirection(DcMotor.Direction.REVERSE);
+
+        battery = hardwareMap.voltageSensor.iterator().next();
+
+        imu = hardwareMap.get(BNO055IMU.class, "imu");
+        BNO055IMU.Parameters parameters = new BNO055IMU.Parameters();
+        parameters.angleUnit = BNO055IMU.AngleUnit.DEGREES;
+        imu.initialize(parameters);
+
+        leftFront.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        rightFront.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        leftRear.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        rightRear.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        leftFront.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        rightFront.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        leftRear.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        rightRear.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        wsServer = new RobotWebSocketServer(8080);
+        wsServer.start();
+
+        telemetry.addData("Status", "server ready on 8080");
+        telemetry.addData("IP", "use 192.168.43.1");
+        telemetry.update();
+    }
+
+    @Override
+    public void loop() {
+        int lf = leftFront.getCurrentPosition();
+        int rf = rightFront.getCurrentPosition();
+        int lr = leftRear.getCurrentPosition();
+        int rr = rightRear.getCurrentPosition();
+
+        if (firstLoop) {
+            prevLF = lf; prevRF = rf; prevLR = lr; prevRR = rr;
+            firstLoop = false;
+        } else {
+            int dLF = lf - prevLF;
+            int dRF = rf - prevRF;
+            int dLR = lr - prevLR;
+            int dRR = rr - prevRR;
+            prevLF = lf; prevRF = rf; prevLR = lr; prevRR = rr;
+
+            double forward = (dLF + dRF + dLR + dRR) * INCHES_PER_TICK / 4.0;
+            double strafe = (dLF - dRF - dLR + dRR) * INCHES_PER_TICK / 4.0;
+            lastEncoderRotate = (dLF - dRF + dLR - dRR) * INCHES_PER_TICK / (4.0 * (TRACK_WIDTH_INCHES / 2 + WHEEL_BASE_INCHES / 2));
+
+            Orientation angles = imu.getAngularOrientation(AxesReference.INTRINSIC, AxesOrder.ZYX, AngleUnit.DEGREES);
+            double imuHeading = angles.firstAngle;
+            double deltaHeading = imuHeading - robotHeading;
+            while (deltaHeading > 180) deltaHeading -= 360;
+            while (deltaHeading < -180) deltaHeading += 360;
+            robotHeading += deltaHeading;
+
+            double cos = Math.cos(Math.toRadians(robotHeading));
+            double sin = Math.sin(Math.toRadians(robotHeading));
+            robotX += forward * cos - strafe * sin;
+            robotY += forward * sin + strafe * cos;
+        }
+
+        if (followingPath && !waypoints.isEmpty()) {
+            followPath();
+        }
+
+        JSONObject data = new JSONObject();
+        try {
+            data.put("x", robotX);
+            data.put("y", robotY);
+            data.put("heading", robotHeading);
+            data.put("battery", battery.getVoltage());
+            data.put("LF_enc", lf);
+            data.put("RF_enc", rf);
+            data.put("LR_enc", lr);
+            data.put("RR_enc", rr);
+            wsServer.sendTelemetry(data);
+        } catch (Exception e) {
+            telemetry.addData("WS Error", e.getMessage());
+        }
+
+        telemetry.addData("Pose", "X:%.1f Y:%.1f H:%.1f", robotX, robotY, robotHeading);
+        telemetry.addData("Encoder-based rotation (deg/loop)", "%.3f", lastEncoderRotate);
+        telemetry.addData("Following", followingPath ? "yes" : "no");
+        telemetry.update();
+    }
+    private double calculateHeadingPID(double headingError) {
+        long currentTime = System.currentTimeMillis();
+        double deltaTime = (lastTime == 0) ? 0.02 : (currentTime - lastTime) / 1000.0;
+        lastTime = currentTime;
+
+        headingIntegral += headingError * deltaTime;
+        // clamp integral so it cannot wind indefinitely
+        headingIntegral = Math.max(-50, Math.min(50, headingIntegral));
+
+        double derivative = (deltaTime > 0) ? (headingError - lastHeadingError) / deltaTime : 0;
+        lastHeadingError = headingError;
+
+        double output = (headingKp * headingError) + (headingKi * headingIntegral) + (headingKd * derivative);
+        return Math.max(-0.5, Math.min(0.5, output));
+    }
+
+    private void followPath() {
+        if (currentWaypointIndex >= waypoints.size()) {
+            followingPath = false;
+            stopMotors();
+            return;
+        }
+
+        double[] target = waypoints.get(currentWaypointIndex);
+        double targetX = target[0];
+        double targetY = target[1];
+
+        double dx = targetX - robotX;
+        double dy = targetY - robotY;
+        double desiredHeading = Math.toDegrees(Math.atan2(dy, dx));
+
+        double headingError = desiredHeading - robotHeading;
+        while (headingError > 180) headingError -= 360;
+        while (headingError < -180) headingError += 360;
+
+        double distance = Math.hypot(dx, dy);
+
+        if (distance < 2.0) {
+            currentWaypointIndex++;
+            stopMotors();
+            return;
+        }
+
+        if (Math.abs(headingError) > 10) {
+            double rotatePower = calculateHeadingPID(headingError);
+            leftFront.setPower(rotatePower);
+            rightFront.setPower(-rotatePower);
+            leftRear.setPower(rotatePower);
+            rightRear.setPower(-rotatePower);
+        } else {
+            double forwardPower = 0.3;
+            double correction = calculateHeadingPID(headingError);
+            leftFront.setPower(forwardPower + correction);
+            rightFront.setPower(forwardPower - correction);
+            leftRear.setPower(forwardPower + correction);
+            rightRear.setPower(forwardPower - correction);
+        }
+    }
+
+    private void stopMotors() {
+        leftFront.setPower(0);
+        rightFront.setPower(0);
+        leftRear.setPower(0);
+        rightRear.setPower(0);
+    }
+
+    @Override
+    public void stop() {
+        if (wsServer != null) wsServer.stopServer();
+    }
+
+    private class RobotWebSocketServer extends WebSocketServer {
+        private final ConcurrentLinkedQueue<WebSocket> clients = new ConcurrentLinkedQueue<>();
+
+        public RobotWebSocketServer(int port) {
+            super(new InetSocketAddress(port));
+        }
+
+        @Override
+        public void onOpen(WebSocket conn, ClientHandshake handshake) {
+            clients.add(conn);
+        }
+
+        @Override
+        public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+            clients.remove(conn);
+        }
+
+        @Override
+        public void onMessage(WebSocket conn, String message) {
+            try {
+                JSONObject json = new JSONObject(message);
+                String type = json.getString("type");
+
+                switch (type) {
+                    case "manualDrive":
+                        followingPath = false;
+                        double forward = json.getDouble("forward");
+                        double strafe = json.getDouble("strafe");
+                        double rotate = json.getDouble("rotate");
+
+                        double lf = forward + strafe + rotate;
+                        double rf = forward - strafe - rotate;
+                        double lr = forward - strafe + rotate;
+                        double rr = forward + strafe - rotate;
+
+                        double max = Math.max(1.0, Math.max(Math.abs(lf), Math.max(Math.abs(rf), Math.max(Math.abs(lr), Math.abs(rr)))));
+                        leftFront.setPower(lf / max);
+                        rightFront.setPower(rf / max);
+                        leftRear.setPower(lr / max);
+                        rightRear.setPower(rr / max);
+                        break;
+
+                    case "motorTest":
+                        double lfTest = json.getDouble("lf");
+                        double rfTest = json.getDouble("rf");
+                        double lrTest = json.getDouble("lr");
+                        double rrTest = json.getDouble("rr");
+                        leftFront.setPower(lfTest);
+                        rightFront.setPower(rfTest);
+                        leftRear.setPower(lrTest);
+                        rightRear.setPower(rrTest);
+                        break;
+
+                    case "resetPose":
+                        robotX = 0;
+                        robotY = 0;
+                        break;
+
+                    case "stop":
+                        stopMotors();
+                        followingPath = false;
+                        break;
+
+                    case "setPID":
+                        headingKp = json.getDouble("kp");
+                        headingKi = json.getDouble("ki");
+                        headingKd = json.getDouble("kd");
+                        break;
+
+                    case "runPath":
+                        JSONObject startObj = json.getJSONObject("start");
+                        JSONArray waypointsArr = json.getJSONArray("waypoints");
+                        robotX = startObj.getDouble("x");
+                        robotY = startObj.getDouble("y");
+                        waypoints.clear();
+                        for (int i = 0; i < waypointsArr.length(); i++) {
+                            JSONObject wp = waypointsArr.getJSONObject(i);
+                            waypoints.add(new double[]{wp.getDouble("x"), wp.getDouble("y")});
+                        }
+                        currentWaypointIndex = 0;
+                        followingPath = true;
+                        headingIntegral = 0;
+                        lastHeadingError = 0;
+                        lastTime = 0;
+                        stopMotors();
+                        break;
+                }
+            } catch (Exception e) {
+                telemetry.addData("WS Message Error", e.getMessage());
+            }
+        }
+
+        @Override
+        public void onError(WebSocket conn, Exception ex) {
+            telemetry.addData("WS Error", ex.getMessage());
+        }
+
+        @Override
+        public void onStart() {
+            telemetry.addData("WS", "started");
+        }
+
+        public void sendTelemetry(JSONObject data) {
+            String msg = data.toString();
+            for (WebSocket client : clients) {
+                try {
+                    client.send(msg);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        public void stopServer() {
+            try {
+                stop();
+            } catch (Exception e) {
+                telemetry.addData("WS Stop Error", e.getMessage());
+            }
+        }
+    }
+}
