@@ -1,0 +1,171 @@
+package org.firstinspires.ftc.teamcode;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+
+  @TeleOp(name = "V5Arcieri", group = "Competition")
+public class V5 extends OpMode {
+
+    private static final double DEADZONE = 0.05;
+    private static final double LAUNCHER_TARGET_RPM = 3000;
+    private static final double LAUNCHER_TOLERANCE_RPM = 100;
+    private static final double TICKS_PER_REV = 28.0;
+
+    private DcMotor frontLeftDrive;
+    private DcMotor frontRightDrive;
+    private DcMotor backLeftDrive;
+    private DcMotor backRightDrive;
+    private DcMotorEx intake;
+    private DcMotorEx launcher;
+    private CRServo leftIntakeServo;
+    private CRServo rightIntakeServo;
+
+    private double frontLeftPower;
+    private double frontRightPower;
+    private double backLeftPower;
+    private double backRightPower;
+
+    private enum LaunchState { IDLE, SPINNING_UP, READY }
+    private LaunchState launchState = LaunchState.IDLE;
+
+    @Override
+    public void init() {
+        frontLeftDrive = hardwareMap.get(DcMotor.class, "front_left_drive");
+        frontRightDrive = hardwareMap.get(DcMotor.class, "front_right_drive");
+        backLeftDrive = hardwareMap.get(DcMotor.class, "back_left_drive");
+        backRightDrive = hardwareMap.get(DcMotor.class, "back_right_drive");
+        intake = hardwareMap.get(DcMotorEx.class, "intake");
+        launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+        leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
+
+        frontLeftDrive.setDirection(DcMotor.Direction.FORWARD);
+        backLeftDrive.setDirection(DcMotor.Direction.FORWARD);
+        frontRightDrive.setDirection(DcMotor.Direction.REVERSE);
+        backRightDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+
+        frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        launcher.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        launcher.setVelocityPIDFCoefficients(10, 3, 0, 12);
+
+        telemetry.addData("Status", "Initialized");
+    }
+
+    @Override
+    public void start() {
+        launchState = LaunchState.IDLE;
+    }
+
+    @Override
+    public void loop() {
+        drive();
+        intake();
+        launcher();
+
+        telemetry.addData("Drive", "FL %.2f FR %.2f BL %.2f BR %.2f", frontLeftPower, frontRightPower, backLeftPower, backRightPower);
+        telemetry.addData("Launcher", "%s %.0f RPM", launchState, getLauncherRPM());
+        telemetry.addData("Intake", "%.2f", intake.getPower());
+        telemetry.update();
+    }
+
+    @Override
+    public void stop() {
+        frontLeftDrive.setPower(0);
+        frontRightDrive.setPower(0);
+        backLeftDrive.setPower(0);
+        backRightDrive.setPower(0);
+        intake.setPower(0);
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+        launcher.setPower(0);
+    }
+
+    private void drive() {
+        double forward = shapeInput(-gamepad1.left_stick_y);
+        double strafe = shapeInput(gamepad1.left_stick_x);
+        double rotate = shapeInput(gamepad1.right_stick_x);
+
+        frontLeftPower = forward + strafe + rotate;
+        frontRightPower = forward - strafe - rotate;
+        backLeftPower = forward - strafe + rotate;
+        backRightPower = forward + strafe - rotate;
+
+        double max = Math.max(Math.abs(frontLeftPower), Math.max(Math.abs(frontRightPower), Math.max(Math.abs(backLeftPower), Math.abs(backRightPower))));
+        if (max > 1.0) {
+            frontLeftPower /= max;
+            frontRightPower /= max;
+            backLeftPower /= max;
+            backRightPower /= max;
+        }
+
+        frontLeftDrive.setPower(frontLeftPower);
+        frontRightDrive.setPower(frontRightPower);
+        backLeftDrive.setPower(backLeftPower);
+        backRightDrive.setPower(backRightPower);
+    }
+
+    private double shapeInput(double input) {
+        if (Math.abs(input) < DEADZONE) return 0;
+        return Math.copySign(input * input, input);
+    }
+
+    private void intake() {
+        double power = gamepad1.right_trigger - gamepad1.left_trigger;
+        intake.setPower(power);
+        leftIntakeServo.setPower(power);
+        rightIntakeServo.setPower(power);
+    }
+
+    private void launcher() {
+        boolean spinUp = gamepad1.a;
+
+        switch (launchState) {
+            case IDLE:
+                if (spinUp) {
+                    launcher.setVelocity(rpmToTicks(LAUNCHER_TARGET_RPM));
+                    launchState = LaunchState.SPINNING_UP;
+                } else {
+                    launcher.setPower(0);
+                }
+                break;
+            case SPINNING_UP:
+                if (!spinUp) {
+                    launcher.setPower(0);
+                    launchState = LaunchState.IDLE;
+                } else if (isLauncherReady()) {
+                    launchState = LaunchState.READY;
+                    gamepad1.rumble(1.0, 1.0, 200);
+                }
+                break;
+            case READY:
+                if (!spinUp) {
+                    launcher.setPower(0);
+                    launchState = LaunchState.IDLE;
+                }
+                break;
+        }
+    }
+
+    private boolean isLauncherReady() {
+        return Math.abs(getLauncherRPM() - LAUNCHER_TARGET_RPM) < LAUNCHER_TOLERANCE_RPM;
+    }
+
+    private double getLauncherRPM() {
+        return launcher.getVelocity() * 60.0 / TICKS_PER_REV;
+    }
+
+    private double rpmToTicks(double rpm) {
+        return rpm * TICKS_PER_REV / 60.0;
+    }
+}
