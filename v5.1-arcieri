@@ -1,0 +1,301 @@
+package org.firstinspires.ftc.teamcode;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.hardware.VoltageSensor;
+import com.qualcomm.robotcore.util.ElapsedTime;
+
+@TeleOp(name = "v5.1-arcieri", group = "Competition")
+public class V5 extends OpMode {
+
+    DcMotor fl, fr, bl, br;
+
+    DcMotorEx intake;
+    CRServo leftIntakeServo, rightIntakeServo;
+
+    DcMotorEx launcher;
+    CRServo feedServo;
+
+    VoltageSensor battery;
+
+    final double DEADZONE = 0.05;
+    final double SLOW_SCALE = 0.4;
+    final double TICKS_PER_REV = 28.0;
+    final double RPM_TOLERANCE = 80;
+    final double FEED_TIME = 0.35;
+    final double FEED_COOLDOWN = 0.15;
+    final double JAM_CURRENT = 4.5;
+    final double JAM_REVERSE_TIME = 0.25;
+
+    double rpmNear = 2400;
+    double rpmMid = 2800;
+    double rpmFar = 3200;
+    double targetRPM = rpmMid;
+
+    double flPower, frPower, blPower, brPower;
+    boolean slowMode = false;
+
+    boolean prevSlow, prevSpin, prevFeed, prevBoost;
+    boolean boost = false;
+
+    String presetName = "MID";
+    double targetRPMDisplay = 0;
+
+    enum State { IDLE, SPINNING_UP, READY, FEEDING, COOLDOWN, JAM_REVERSE }
+    State state = State.IDLE;
+
+    ElapsedTime feedTimer = new ElapsedTime();
+    ElapsedTime cooldownTimer = new ElapsedTime();
+    ElapsedTime jamTimer = new ElapsedTime();
+    ElapsedTime rumbleTimer = new ElapsedTime();
+    ElapsedTime loopTimer = new ElapsedTime();
+
+    double loopHz = 0;
+
+    @Override
+    public void init() {
+        fl = hardwareMap.get(DcMotor.class, "front_left_drive");
+        fr = hardwareMap.get(DcMotor.class, "front_right_drive");
+        bl = hardwareMap.get(DcMotor.class, "back_left_drive");
+        br = hardwareMap.get(DcMotor.class, "back_right_drive");
+
+        intake = hardwareMap.get(DcMotorEx.class, "intake");
+        launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+
+        leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
+        feedServo = hardwareMap.get(CRServo.class, "feed_servo");
+
+        battery = hardwareMap.voltageSensor.iterator().next();
+
+        fl.setDirection(DcMotor.Direction.FORWARD);
+        bl.setDirection(DcMotor.Direction.FORWARD);
+        fr.setDirection(DcMotor.Direction.REVERSE);
+        br.setDirection(DcMotor.Direction.REVERSE);
+
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+
+        fl.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        fr.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        bl.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        br.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        launcher.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+
+        fl.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        fr.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        bl.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        br.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        fl.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        fr.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        bl.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        br.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        launcher.setVelocityPIDFCoefficients(12, 3, 0, 14);
+
+        telemetry.addData("status", "ready");
+        telemetry.update();
+    }
+
+    @Override
+    public void init_loop() {
+        telemetry.addData("battery", "%.2f V", battery.getVoltage());
+        telemetry.addData("launcher", "port " + launcher.getPortNumber());
+        telemetry.addData("feed", "port " + feedServo.getPortNumber());
+        telemetry.addData("preset", presetName + " @" + (int) targetRPM);
+        telemetry.update();
+    }
+
+    @Override
+    public void start() {
+        state = State.IDLE;
+        loopTimer.reset();
+    }
+
+    @Override
+    public void loop() {
+        double dt = loopTimer.seconds();
+        loopTimer.reset();
+        if (dt > 0) loopHz = 1.0 / dt;
+
+        readButtons();
+        drive();
+        intake();
+        launcher();
+        sendTelemetry();
+    }
+
+    @Override
+    public void stop() {
+        fl.setPower(0);
+        fr.setPower(0);
+        bl.setPower(0);
+        br.setPower(0);
+        intake.setPower(0);
+        launcher.setPower(0);
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+        feedServo.setPower(0);
+    }
+
+    void readButtons() {
+        if (gamepad1.left_bumper && !prevSlow) slowMode = !slowMode;
+        prevSlow = gamepad1.left_bumper;
+
+        if (gamepad1.right_bumper && !prevBoost) boost = !boost;
+        prevBoost = gamepad1.right_bumper;
+
+        if (gamepad1.dpad_up) { targetRPM = rpmNear; presetName = "NEAR"; }
+        else if (gamepad1.dpad_right) { targetRPM = rpmMid; presetName = "MID"; }
+        else if (gamepad1.dpad_down) { targetRPM = rpmFar; presetName = "FAR"; }
+
+        if (gamepad1.back && gamepad1.start) {
+            stop();
+            requestOpModeStop();
+        }
+    }
+
+    void drive() {
+        double forward = shape(-gamepad1.left_stick_y);
+        double strafe = shape(gamepad1.left_stick_x);
+        double rotate = shape(gamepad1.right_stick_x);
+
+        if (slowMode && !boost) {
+            forward *= SLOW_SCALE;
+            strafe *= SLOW_SCALE;
+            rotate *= SLOW_SCALE;
+        }
+
+        flPower = forward + strafe + rotate;
+        frPower = forward - strafe - rotate;
+        blPower = forward - strafe + rotate;
+        brPower = forward + strafe - rotate;
+
+        double max = Math.abs(flPower);
+        if (Math.abs(frPower) > max) max = Math.abs(frPower);
+        if (Math.abs(blPower) > max) max = Math.abs(blPower);
+        if (Math.abs(brPower) > max) max = Math.abs(brPower);
+
+        if (max > 1.0) {
+            flPower /= max;
+            frPower /= max;
+            blPower /= max;
+            brPower /= max;
+        }
+
+        fl.setPower(flPower);
+        fr.setPower(frPower);
+        bl.setPower(blPower);
+        br.setPower(brPower);
+    }
+
+    double shape(double x) {
+        if (Math.abs(x) < DEADZONE) return 0;
+        return Math.copySign(x * x, x);
+    }
+
+    void intake() {
+        double power = gamepad1.right_trigger - gamepad1.left_trigger;
+        intake.setPower(power);
+        leftIntakeServo.setPower(power);
+        rightIntakeServo.setPower(power);
+    }
+
+    void launcher() {
+        if (gamepad1.a && !prevSpin) {
+            if (state == State.IDLE) {
+                launcher.setVelocity(rpmToTicks(targetRPM));
+                state = State.SPINNING_UP;
+            } else {
+                launcher.setPower(0);
+                feedServo.setPower(0);
+                state = State.IDLE;
+            }
+        }
+        prevSpin = gamepad1.a;
+
+        if (gamepad1.b && !prevFeed && state == State.READY) {
+            startFeed();
+        }
+        prevFeed = gamepad1.b;
+
+        switch (state) {
+            case SPINNING_UP:
+                if (atSpeed()) {
+                    state = State.READY;
+                    gamepad1.rumble(0.8, 0.8, 180);
+                }
+                break;
+
+            case FEEDING:
+                if (feedTimer.seconds() > FEED_TIME) {
+                    feedServo.setPower(0);
+                    cooldownTimer.reset();
+                    state = State.COOLDOWN;
+                }
+                break;
+
+            case COOLDOWN:
+                if (cooldownTimer.seconds() > FEED_COOLDOWN) {
+                    state = atSpeed() ? State.READY : State.SPINNING_UP;
+                }
+                break;
+
+            case JAM_REVERSE:
+                if (jamTimer.seconds() > JAM_REVERSE_TIME) {
+                    intake.setPower(0);
+                    leftIntakeServo.setPower(0);
+                    rightIntakeServo.setPower(0);
+                    state = atSpeed() ? State.READY : State.SPINNING_UP;
+                }
+                break;
+        }
+
+        if (rumbleTimer.seconds() < 0.18) gamepad1.rumble(0.6, 0.6, 1);
+
+        targetRPMDisplay = targetRPM;
+    }
+
+    void startFeed() {
+        if (intake.getCurrent() > JAM_CURRENT) {
+            intake.setPower(-0.6);
+            leftIntakeServo.setPower(-0.6);
+            rightIntakeServo.setPower(-0.6);
+            jamTimer.reset();
+            rumbleTimer.reset();
+            state = State.JAM_REVERSE;
+            return;
+        }
+        feedServo.setPower(1.0);
+        feedTimer.reset();
+        state = State.FEEDING;
+    }
+
+    boolean atSpeed() {
+        return Math.abs(currentRPM() - targetRPM) < RPM_TOLERANCE;
+    }
+
+    double currentRPM() {
+        return launcher.getVelocity() * 60.0 / TICKS_PER_REV;
+    }
+
+    double rpmToTicks(double rpm) {
+        return rpm * TICKS_PER_REV / 60.0;
+    }
+
+    void sendTelemetry() {
+        telemetry.addData("loop", "%.0f hz", loopHz);
+        telemetry.addData("battery", "%.2f V", battery.getVoltage());
+        telemetry.addData("drive mode", boost ? "BOOST" : slowMode ? "SLOW" : "NORMAL");
+        telemetry.addData("drive", "FL %.2f  FR %.2f  BL %.2f  BR %.2f", flPower, frPower, blPower, brPower);
+        telemetry.addData("launcher", "%s  target %.0f  actual %.0f", state, targetRPMDisplay, currentRPM());
+        telemetry.addData("preset", presetName);
+        telemetry.addData("intake", "pwr %.2f  amps %.2f", intake.getPower(), intake.getCurrent());
+        telemetry.update();
+    }
+}
