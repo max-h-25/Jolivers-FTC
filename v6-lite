@@ -1,0 +1,150 @@
+package org.firstinspires.ftc.teamcode.java;
+
+import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.CRServoImplEx;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.PwmControl;
+import com.qualcomm.robotcore.util.Range;
+
+@TeleOp(name = "Mec BioBuzz StarterBot Teleop", group = "StarterBot")
+public class biobuzzprogram extends OpMode {
+
+    private DcMotor leftFrontDrive;
+    private DcMotor leftBackDrive;
+    private DcMotor rightFrontDrive;
+    private DcMotor rightBackDrive;
+    private DcMotorEx launcher;
+    private DcMotor intake;
+    private CRServo leftIntakeServo;
+    private CRServo rightIntakeServo;
+    private CRServoImplEx windmillServo;
+
+    public static final double LAUNCHER_TARGET_VELOCITY = 1250;
+    public static final double LAUNCHER_MIN_VELOCITY = 1200;
+    public static final double LAUNCHER_HOLD_VELOCITY = 1100;
+    public static final double WINDMILL_POWER = 0.8;
+    public static final double LAUNCH_INTAKE_BOOST = 0.5;
+
+    private double leftFrontPower;
+    private double rightFrontPower;
+    private double leftBackPower;
+    private double rightBackPower;
+    private double intakePower;
+    private boolean feeding = false;
+
+    @Override
+    public void init() {
+        leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
+        rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
+        leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
+        rightBackDrive = hardwareMap.get(DcMotor.class, "right_back_drive");
+        intake = hardwareMap.get(DcMotor.class, "intake");
+        launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+        windmillServo = hardwareMap.get(CRServoImplEx.class, "windmillServo");
+        leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
+
+        leftFrontDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightFrontDrive.setDirection(DcMotor.Direction.FORWARD);
+        leftBackDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightBackDrive.setDirection(DcMotor.Direction.FORWARD);
+
+        leftFrontDrive.setZeroPowerBehavior(BRAKE);
+        rightFrontDrive.setZeroPowerBehavior(BRAKE);
+        leftBackDrive.setZeroPowerBehavior(BRAKE);
+        rightBackDrive.setZeroPowerBehavior(BRAKE);
+        intake.setZeroPowerBehavior(BRAKE);
+
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        launcher.setPIDFCoefficients(DcMotor.RunMode.RUN_USING_ENCODER, new PIDFCoefficients(40, 0, 0, 12.5));
+
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        windmillServo.setDirection(DcMotorSimple.Direction.FORWARD);
+        windmillServo.setPwmRange(new PwmControl.PwmRange(500, 2500));
+
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+        windmillServo.setPower(0);
+
+        telemetry.addData("Status", "Initialized");
+    }
+
+    @Override
+    public void loop() {
+        mecanumDrive(-gamepad1.left_stick_y, gamepad1.left_stick_x, gamepad1.right_stick_x);
+
+        intakePower = gamepad1.right_trigger - gamepad1.left_trigger;
+
+        launch();
+
+        intakePower = Range.clip(intakePower, -1.0, 1.0);
+        intake.setPower(intakePower);
+        leftIntakeServo.setPower(intakePower);
+        rightIntakeServo.setPower(intakePower);
+
+        telemetry.addData("Drive", "LF %.2f  RF %.2f  LB %.2f  RB %.2f",
+                leftFrontPower, rightFrontPower, leftBackPower, rightBackPower);
+        telemetry.addData("Triggers", "left %.2f  right %.2f", gamepad1.left_trigger, gamepad1.right_trigger);
+        telemetry.addData("Launcher", "%.0f / %.0f ticks/s", launcher.getVelocity(), LAUNCHER_TARGET_VELOCITY);
+        telemetry.addData("Feeding", feeding);
+    }
+
+    @Override
+    public void stop() {
+        launcher.setVelocity(0);
+        windmillServo.setPower(0);
+        intake.setPower(0);
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+    }
+
+    void mecanumDrive(double forward, double strafe, double rotate) {
+        leftFrontPower = forward + strafe + rotate;
+        rightFrontPower = forward - strafe - rotate;
+        leftBackPower = forward - strafe + rotate;
+        rightBackPower = forward + strafe - rotate;
+
+        double max = Math.max(1.0, Math.max(
+                Math.max(Math.abs(leftFrontPower), Math.abs(rightFrontPower)),
+                Math.max(Math.abs(leftBackPower), Math.abs(rightBackPower))));
+
+        leftFrontPower /= max;
+        rightFrontPower /= max;
+        leftBackPower /= max;
+        rightBackPower /= max;
+
+        leftFrontDrive.setPower(leftFrontPower);
+        rightFrontDrive.setPower(rightFrontPower);
+        leftBackDrive.setPower(leftBackPower);
+        rightBackDrive.setPower(rightBackPower);
+    }
+
+    void launch() {
+        if (gamepad1.right_bumper) {
+            launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
+            double velocity = launcher.getVelocity();
+            if (velocity > LAUNCHER_MIN_VELOCITY) {
+                feeding = true;
+            } else if (velocity < LAUNCHER_HOLD_VELOCITY) {
+                feeding = false;
+            }
+        } else {
+            launcher.setVelocity(0);
+            feeding = false;
+        }
+
+        if (feeding) {
+            windmillServo.setPower(WINDMILL_POWER);
+            intakePower += LAUNCH_INTAKE_BOOST;
+        } else {
+            windmillServo.setPower(0);
+        }
+    }
+}
