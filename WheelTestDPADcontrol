@@ -1,0 +1,66 @@
+package org.firstinspires.ftc.teamcode.java;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+
+@TeleOp(name = "Wheel Test", group = "Test")
+public class WheelTest extends OpMode {
+
+    public static final double TEST_POWER = 0.5;
+
+    private DcMotor leftFrontDrive;
+    private DcMotor rightFrontDrive;
+    private DcMotor leftBackDrive;
+    private DcMotor rightBackDrive;
+    private CRServo windmillServo;
+
+    @Override
+    public void init() {
+        leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
+        rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
+        leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
+        rightBackDrive = hardwareMap.get(DcMotor.class, "right_back_drive");
+        windmillServo = hardwareMap.get(CRServo.class, "windmillServo");
+
+        leftFrontDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightFrontDrive.setDirection(DcMotor.Direction.FORWARD);
+        leftBackDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightBackDrive.setDirection(DcMotor.Direction.FORWARD);
+        windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
+
+        telemetry.addLine("Hold Y = left front");
+        telemetry.addLine("Hold B = right front");
+        telemetry.addLine("Hold X = left back");
+        telemetry.addLine("Hold A = right back");
+        telemetry.addLine("Hold dpad up = windmill");
+    }
+
+    @Override
+    public void loop() {
+        leftFrontDrive.setPower(gamepad1.y ? TEST_POWER : 0);
+        rightFrontDrive.setPower(gamepad1.b ? TEST_POWER : 0);
+        leftBackDrive.setPower(gamepad1.x ? TEST_POWER : 0);
+        rightBackDrive.setPower(gamepad1.a ? TEST_POWER : 0);
+        windmillServo.setPower(gamepad1.dpad_up ? TEST_POWER : 0);
+
+        telemetry.addLine("Every wheel should roll the robot FORWARD");
+        telemetry.addLine("Windmill should spin counter-clockwise nonstop while held");
+        telemetry.addData("Y  left front", "%s  pos %d", gamepad1.y, leftFrontDrive.getCurrentPosition());
+        telemetry.addData("B  right front", "%s  pos %d", gamepad1.b, rightFrontDrive.getCurrentPosition());
+        telemetry.addData("X  left back", "%s  pos %d", gamepad1.x, leftBackDrive.getCurrentPosition());
+        telemetry.addData("A  right back", "%s  pos %d", gamepad1.a, rightBackDrive.getCurrentPosition());
+        telemetry.addData("Dpad up  windmill", gamepad1.dpad_up);
+    }
+
+    @Override
+    public void stop() {
+        leftFrontDrive.setPower(0);
+        rightFrontDrive.setPower(0);
+        leftBackDrive.setPower(0);
+        rightBackDrive.setPower(0);
+        windmillServo.setPower(0);
+    }
+}
