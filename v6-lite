@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.java;
 
 import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
 
+import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -31,6 +32,7 @@ public class biobuzzprogram extends OpMode {
     public static final double LAUNCHER_HOLD_VELOCITY = 1100;
     public static final double WINDMILL_POWER = 0.8;
     public static final double LAUNCH_INTAKE_BOOST = 0.5;
+    public static final double SLOW_DRIVE_SCALE = 0.4;
 
     private double leftFrontPower;
     private double rightFrontPower;
@@ -38,9 +40,14 @@ public class biobuzzprogram extends OpMode {
     private double rightBackPower;
     private double intakePower;
     private boolean feeding = false;
+    private boolean windmillRunning = true;
 
     @Override
     public void init() {
+        for (LynxModule hub : hardwareMap.getAll(LynxModule.class)) {
+            hub.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
+        }
+
         leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
         rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
         leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
@@ -66,19 +73,20 @@ public class biobuzzprogram extends OpMode {
         launcher.setPIDFCoefficients(DcMotor.RunMode.RUN_USING_ENCODER, new PIDFCoefficients(40, 0, 0, 12.5));
 
         rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
-        windmillServo.setDirection(DcMotorSimple.Direction.FORWARD);
+        windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
         windmillServo.setPwmRange(new PwmControl.PwmRange(500, 2500));
 
         leftIntakeServo.setPower(0);
         rightIntakeServo.setPower(0);
-        windmillServo.setPower(0);
+        runWindmill(false);
 
         telemetry.addData("Status", "Initialized");
     }
 
     @Override
     public void loop() {
-        mecanumDrive(-gamepad1.left_stick_y, gamepad1.left_stick_x, gamepad1.right_stick_x);
+        double driveScale = gamepad1.left_bumper ? SLOW_DRIVE_SCALE : 1.0;
+        mecanumDrive(-gamepad1.left_stick_y, gamepad1.left_stick_x, gamepad1.right_stick_x, driveScale);
 
         intakePower = gamepad1.right_trigger - gamepad1.left_trigger;
 
@@ -91,21 +99,22 @@ public class biobuzzprogram extends OpMode {
 
         telemetry.addData("Drive", "LF %.2f  RF %.2f  LB %.2f  RB %.2f",
                 leftFrontPower, rightFrontPower, leftBackPower, rightBackPower);
+        telemetry.addData("Slow mode", gamepad1.left_bumper);
         telemetry.addData("Triggers", "left %.2f  right %.2f", gamepad1.left_trigger, gamepad1.right_trigger);
         telemetry.addData("Launcher", "%.0f / %.0f ticks/s", launcher.getVelocity(), LAUNCHER_TARGET_VELOCITY);
-        telemetry.addData("Feeding", feeding);
+        telemetry.addData("Windmill", windmillRunning ? "spinning" : "stopped");
     }
 
     @Override
     public void stop() {
         launcher.setVelocity(0);
-        windmillServo.setPower(0);
+        runWindmill(false);
         intake.setPower(0);
         leftIntakeServo.setPower(0);
         rightIntakeServo.setPower(0);
     }
 
-    void mecanumDrive(double forward, double strafe, double rotate) {
+    void mecanumDrive(double forward, double strafe, double rotate, double scale) {
         leftFrontPower = forward + strafe + rotate;
         rightFrontPower = forward - strafe - rotate;
         leftBackPower = forward - strafe + rotate;
@@ -115,10 +124,10 @@ public class biobuzzprogram extends OpMode {
                 Math.max(Math.abs(leftFrontPower), Math.abs(rightFrontPower)),
                 Math.max(Math.abs(leftBackPower), Math.abs(rightBackPower))));
 
-        leftFrontPower /= max;
-        rightFrontPower /= max;
-        leftBackPower /= max;
-        rightBackPower /= max;
+        leftFrontPower = leftFrontPower / max * scale;
+        rightFrontPower = rightFrontPower / max * scale;
+        leftBackPower = leftBackPower / max * scale;
+        rightBackPower = rightBackPower / max * scale;
 
         leftFrontDrive.setPower(leftFrontPower);
         rightFrontDrive.setPower(rightFrontPower);
@@ -140,11 +149,24 @@ public class biobuzzprogram extends OpMode {
             feeding = false;
         }
 
+        runWindmill(feeding);
+
         if (feeding) {
-            windmillServo.setPower(WINDMILL_POWER);
             intakePower += LAUNCH_INTAKE_BOOST;
+        }
+    }
+
+    void runWindmill(boolean on) {
+        if (on == windmillRunning) {
+            return;
+        }
+        windmillRunning = on;
+        if (on) {
+            windmillServo.setPwmEnable();
+            windmillServo.setPower(Math.abs(WINDMILL_POWER));
         } else {
             windmillServo.setPower(0);
+            windmillServo.setPwmDisable();
         }
     }
 }
