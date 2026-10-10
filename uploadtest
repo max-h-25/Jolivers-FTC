@@ -1,0 +1,40 @@
+package org.firstinspires.ftc.teamcode.java;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+
+@TeleOp(name = "Upload Test", group = "Test")
+public class UploadTest extends OpMode {
+
+    public static final String BUILD = "Test 1";
+
+    private int loops = 0;
+
+    @Override
+    public void init() {
+        telemetry.addData("Upload", "WORKING");
+        telemetry.addData("Build", BUILD);
+        telemetry.addData("Next", "Press START");
+    }
+
+    @Override
+    public void start() {
+        resetRuntime();
+    }
+
+    @Override
+    public void loop() {
+        loops++;
+
+        telemetry.addData("Upload", "WORKING");
+        telemetry.addData("Build", BUILD);
+        telemetry.addData("Running for", "%.1f s", getRuntime());
+        telemetry.addData("Loops", loops);
+        telemetry.addLine();
+        telemetry.addData("Left stick", "x %.2f  y %.2f", gamepad1.left_stick_x, gamepad1.left_stick_y);
+        telemetry.addData("Right stick", "x %.2f  y %.2f", gamepad1.right_stick_x, gamepad1.right_stick_y);
+        telemetry.addData("Triggers", "left %.2f  right %.2f", gamepad1.left_trigger, gamepad1.right_trigger);
+        telemetry.addData("Bumpers", "left %s  right %s", gamepad1.left_bumper, gamepad1.right_bumper);
+        telemetry.addData("Buttons", "A %s  B %s  X %s  Y %s", gamepad1.a, gamepad1.b, gamepad1.x, gamepad1.y);
+    }
+}
