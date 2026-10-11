@@ -1,0 +1,292 @@
+package org.firstinspires.ftc.teamcode.java;
+
+import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
+
+import com.qualcomm.hardware.lynx.LynxModule;
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.CRServoImplEx;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.PwmControl;
+import com.qualcomm.robotcore.hardware.VoltageSensor;
+import com.qualcomm.robotcore.util.Range;
+
+@TeleOp(name = "FoidsGottaGo", group = "StarterBot")
+public class biobuzzprogram extends OpMode {
+
+    public static final String[] PRESET_NAMES = {"CLOSE", "MID", "FAR", "MAX"};
+    private final double[] presetVelocity = {1250, 1450, 1650, 1900};
+
+    public static final double LAUNCHER_MAX_VELOCITY = 2600;
+    public static final double LAUNCHER_MIN_PRESET = 600;
+    public static final double TRIM_STEP = 25;
+    public static final double READY_RATIO = 0.96;
+    public static final double HOLD_RATIO = 0.88;
+
+    public static final double LAUNCHER_P = 40;
+    public static final double LAUNCHER_I = 0;
+    public static final double LAUNCHER_D = 0;
+    public static final double LAUNCHER_F = 12.5;
+    public static final double NOMINAL_VOLTAGE = 12.0;
+
+    public static final double WINDMILL_POWER = 0.8;
+    public static final double SLOW_DRIVE_SCALE = 0.4;
+    public static final double STICK_DEADZONE = 0.05;
+
+    private DcMotor leftFrontDrive;
+    private DcMotor leftBackDrive;
+    private DcMotor rightFrontDrive;
+    private DcMotor rightBackDrive;
+    private DcMotorEx launcher;
+    private DcMotor intake;
+    private CRServo leftIntakeServo;
+    private CRServo rightIntakeServo;
+    private CRServoImplEx windmillServo;
+    private VoltageSensor battery;
+
+    private double leftFrontPower;
+    private double rightFrontPower;
+    private double leftBackPower;
+    private double rightBackPower;
+    private double intakePower;
+    private double windmillPower;
+    private double launcherVelocity;
+    private double batteryVoltage;
+
+    private int presetIndex = 0;
+    private boolean shooterOn = false;
+    private boolean launcherReady = false;
+    private boolean slowDrive = false;
+
+    private boolean prevDpadUp;
+    private boolean prevDpadDown;
+    private boolean prevDpadLeft;
+    private boolean prevDpadRight;
+    private boolean prevY;
+    private boolean prevA;
+    private boolean prevX;
+    private boolean prevRightBumper;
+
+    @Override
+    public void init() {
+        for (LynxModule hub : hardwareMap.getAll(LynxModule.class)) {
+            hub.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
+        }
+
+        leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
+        rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
+        leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
+        rightBackDrive = hardwareMap.get(DcMotor.class, "right_back_drive");
+        intake = hardwareMap.get(DcMotor.class, "intake");
+        launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+        windmillServo = hardwareMap.get(CRServoImplEx.class, "windmillServo");
+        leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
+        battery = hardwareMap.voltageSensor.iterator().next();
+
+        leftFrontDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightFrontDrive.setDirection(DcMotor.Direction.FORWARD);
+        leftBackDrive.setDirection(DcMotor.Direction.REVERSE);
+        rightBackDrive.setDirection(DcMotor.Direction.FORWARD);
+
+        leftFrontDrive.setZeroPowerBehavior(BRAKE);
+        rightFrontDrive.setZeroPowerBehavior(BRAKE);
+        leftBackDrive.setZeroPowerBehavior(BRAKE);
+        rightBackDrive.setZeroPowerBehavior(BRAKE);
+        intake.setZeroPowerBehavior(BRAKE);
+
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        applyLauncherTuning();
+
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        windmillServo.setPwmRange(new PwmControl.PwmRange(500, 2500));
+
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+        windmillServo.setPower(0);
+
+        telemetry.addData("Status", "Initialized");
+        telemetry.addLine("RT = intake in   LT = intake out");
+        telemetry.addLine("LB = windmill feed   B = windmill reverse");
+        telemetry.addLine("RB = shooter on / off");
+        telemetry.addLine("Dpad down / left / up / right = CLOSE / MID / FAR / MAX");
+        telemetry.addLine("Y / A = raise / lower current shot speed");
+        telemetry.addLine("X = slow drive on / off");
+    }
+
+    @Override
+    public void loop() {
+        launcherVelocity = launcher.getVelocity();
+        batteryVoltage = battery.getVoltage();
+
+        handleButtons();
+
+        mecanumDrive(
+                deadzone(-gamepad1.left_stick_y),
+                deadzone(gamepad1.left_stick_x),
+                deadzone(gamepad1.right_stick_x),
+                slowDrive ? SLOW_DRIVE_SCALE : 1.0);
+
+        runIntake();
+        runWindmill();
+        runShooter();
+
+        telemetry.addData("Shot", "%s  (%.0f ticks/s)", PRESET_NAMES[presetIndex], targetVelocity());
+        telemetry.addData("Shooter", launcherStatus());
+        telemetry.addData("Launcher speed", "%.0f / %.0f", launcherVelocity, shooterOn ? targetVelocity() : 0);
+        telemetry.addData("Windmill", windmillStatus());
+        telemetry.addData("Intake power", "%.2f", intakePower);
+        telemetry.addData("Slow drive", slowDrive ? "ON" : "OFF");
+        telemetry.addData("Battery", "%.1f V", batteryVoltage);
+        telemetry.addData("Presets", "CLOSE %.0f  MID %.0f  FAR %.0f  MAX %.0f",
+                presetVelocity[0], presetVelocity[1], presetVelocity[2], presetVelocity[3]);
+        telemetry.addData("Drive", "LF %.2f  RF %.2f  LB %.2f  RB %.2f",
+                leftFrontPower, rightFrontPower, leftBackPower, rightBackPower);
+    }
+
+    @Override
+    public void stop() {
+        launcher.setVelocity(0);
+        windmillServo.setPower(0);
+        intake.setPower(0);
+        leftIntakeServo.setPower(0);
+        rightIntakeServo.setPower(0);
+    }
+
+    private void handleButtons() {
+        boolean up = gamepad1.dpad_up;
+        boolean down = gamepad1.dpad_down;
+        boolean left = gamepad1.dpad_left;
+        boolean right = gamepad1.dpad_right;
+        boolean y = gamepad1.y;
+        boolean a = gamepad1.a;
+        boolean x = gamepad1.x;
+        boolean rightBumper = gamepad1.right_bumper;
+
+        if (down && !prevDpadDown) selectPreset(0);
+        if (left && !prevDpadLeft) selectPreset(1);
+        if (up && !prevDpadUp) selectPreset(2);
+        if (right && !prevDpadRight) selectPreset(3);
+        if (y && !prevY) trimPreset(TRIM_STEP);
+        if (a && !prevA) trimPreset(-TRIM_STEP);
+        if (x && !prevX) slowDrive = !slowDrive;
+
+        if (rightBumper && !prevRightBumper) {
+            shooterOn = !shooterOn;
+            if (shooterOn) {
+                applyLauncherTuning();
+            }
+        }
+
+        prevDpadUp = up;
+        prevDpadDown = down;
+        prevDpadLeft = left;
+        prevDpadRight = right;
+        prevY = y;
+        prevA = a;
+        prevX = x;
+        prevRightBumper = rightBumper;
+    }
+
+    private void runIntake() {
+        intakePower = Range.clip(gamepad1.right_trigger - gamepad1.left_trigger, -1.0, 1.0);
+        intake.setPower(intakePower);
+        leftIntakeServo.setPower(intakePower);
+        rightIntakeServo.setPower(intakePower);
+    }
+
+    private void runWindmill() {
+        if (gamepad1.left_bumper) {
+            windmillPower = WINDMILL_POWER;
+        } else if (gamepad1.b) {
+            windmillPower = -WINDMILL_POWER;
+        } else {
+            windmillPower = 0;
+        }
+        windmillServo.setPower(windmillPower);
+    }
+
+    private void runShooter() {
+        if (shooterOn) {
+            double target = targetVelocity();
+            launcher.setVelocity(target);
+
+            boolean wasReady = launcherReady;
+            if (launcherVelocity > target * READY_RATIO) {
+                launcherReady = true;
+            } else if (launcherVelocity < target * HOLD_RATIO) {
+                launcherReady = false;
+            }
+
+            if (launcherReady && !wasReady) {
+                gamepad1.rumble(200);
+            }
+        } else {
+            launcher.setVelocity(0);
+            launcherReady = false;
+        }
+    }
+
+    private void selectPreset(int index) {
+        presetIndex = index;
+        gamepad1.rumbleBlips(index + 1);
+    }
+
+    private void trimPreset(double amount) {
+        presetVelocity[presetIndex] = Range.clip(
+                presetVelocity[presetIndex] + amount, LAUNCHER_MIN_PRESET, LAUNCHER_MAX_VELOCITY);
+    }
+
+    private double targetVelocity() {
+        return presetVelocity[presetIndex];
+    }
+
+    private void applyLauncherTuning() {
+        double voltage = battery.getVoltage();
+        double f = voltage > 1 ? LAUNCHER_F * NOMINAL_VOLTAGE / voltage : LAUNCHER_F;
+        launcher.setPIDFCoefficients(DcMotor.RunMode.RUN_USING_ENCODER,
+                new PIDFCoefficients(LAUNCHER_P, LAUNCHER_I, LAUNCHER_D, f));
+    }
+
+    private String launcherStatus() {
+        if (!shooterOn) return "OFF";
+        if (launcherReady) return "AT SPEED";
+        return "SPINNING UP";
+    }
+
+    private String windmillStatus() {
+        if (windmillPower > 0) return "FEEDING";
+        if (windmillPower < 0) return "REVERSE";
+        return "STOPPED";
+    }
+
+    private double deadzone(double value) {
+        return Math.abs(value) < STICK_DEADZONE ? 0 : value;
+    }
+
+    void mecanumDrive(double forward, double strafe, double rotate, double scale) {
+        leftFrontPower = forward + strafe + rotate;
+        rightFrontPower = forward - strafe - rotate;
+        leftBackPower = forward - strafe + rotate;
+        rightBackPower = forward + strafe - rotate;
+
+        double max = Math.max(1.0, Math.max(
+                Math.max(Math.abs(leftFrontPower), Math.abs(rightFrontPower)),
+                Math.max(Math.abs(leftBackPower), Math.abs(rightBackPower))));
+
+        leftFrontPower = leftFrontPower / max * scale;
+        rightFrontPower = rightFrontPower / max * scale;
+        leftBackPower = leftBackPower / max * scale;
+        rightBackPower = rightBackPower / max * scale;
+
+        leftFrontDrive.setPower(leftFrontPower);
+        rightFrontDrive.setPower(rightFrontPower);
+        leftBackDrive.setPower(leftBackPower);
+        rightBackDrive.setPower(rightBackPower);
+    }
+}
