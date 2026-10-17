@@ -101,7 +101,6 @@ public class biobuzzprogram extends OpMode {
         intake = hardwareMap.get(DcMotor.class, "intake");
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
         gate = hardwareMap.get(ServoImplEx.class, "windmillServo");
-        gate.setPwmRange(new PwmControl.PwmRange(500, 2500));
         leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
         rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
         battery = hardwareMap.voltageSensor.iterator().next();
@@ -109,15 +108,15 @@ public class biobuzzprogram extends OpMode {
         intake.setZeroPowerBehavior(BRAKE);
         rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
 
-        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        batteryVoltage = battery.getVoltage();
-        applyLauncherTuning();
+        gate.setPwmRange(new PwmControl.PwmRange(500, 2500));
+        setGate(false);
 
-        setGate(true);
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        applyLauncherTuning();
 
         telemetry.addData("Status", "Initialized");
         telemetry.addLine("RT = intake in   LT = intake out");
-        telemetry.addLine("LB = gate down (feed)   B = gate up (block)");
+        telemetry.addLine("LB = gate up (feed)   B = gate down (block)");
         telemetry.addLine("RB = shooter on / off");
         telemetry.addLine("Dpad down / left / up / right = CLOSE / MID / FAR / MAX");
         telemetry.addLine("Y / A = raise / lower current shot speed");
@@ -147,14 +146,13 @@ public class biobuzzprogram extends OpMode {
                 slowDrive ? SLOW_DRIVE_SCALE : 1.0);
 
         runIntake();
-        runGate();
         runShooter();
 
         double target = targetVelocity();
         telemetry.addData("Shot", "%s  (%.0f ticks/s)", PRESET_NAMES[presetIndex], target);
         telemetry.addData("Shooter", launcherStatus());
         telemetry.addData("Launcher speed", "%.0f / %.0f", launcherVelocity, shooterOn ? target : 0);
-        telemetry.addData("Gate", gateUp ? "UP (blocking)" : "DOWN (feeding)");
+        telemetry.addData("Gate", gateUp ? "UP (feeding)" : "DOWN (blocking)");
         telemetry.addData("Intake power", "%.2f", intakePower);
         telemetry.addData("Slow drive", slowDrive ? "ON" : "OFF");
         telemetry.addData("Battery", "%.1f V", batteryVoltage);
@@ -196,6 +194,12 @@ public class biobuzzprogram extends OpMode {
             if (shooterOn) applyLauncherTuning();
         }
 
+        if (gamepad1.left_bumper) {
+            setGate(true);
+        } else if (gamepad1.b) {
+            setGate(false);
+        }
+
         prevDpadUp = up;
         prevDpadDown = down;
         prevDpadLeft = left;
@@ -206,6 +210,13 @@ public class biobuzzprogram extends OpMode {
         prevRightBumper = rightBumper;
     }
 
+    private void setGate(boolean raise) {
+        if (gateWritten && raise == gateUp) return;
+        gate.setPosition(raise ? GATE_UP : GATE_DOWN);
+        gateUp = raise;
+        gateWritten = true;
+    }
+
     private void runIntake() {
         intakePower = Range.clip(gamepad1.right_trigger - gamepad1.left_trigger, -1.0, 1.0);
         if (Math.abs(intakePower - lastIntakePower) < WRITE_EPSILON) return;
@@ -213,21 +224,6 @@ public class biobuzzprogram extends OpMode {
         leftIntakeServo.setPower(intakePower);
         rightIntakeServo.setPower(intakePower);
         lastIntakePower = intakePower;
-    }
-
-    private void runGate() {
-        if (gamepad1.left_bumper) {
-            setGate(false);
-        } else if (gamepad1.b) {
-            setGate(true);
-        }
-    }
-
-    private void setGate(boolean raise) {
-        if (gateWritten && raise == gateUp) return;
-        gate.setPosition(raise ? GATE_UP : GATE_DOWN);
-        gateUp = raise;
-        gateWritten = true;
     }
 
     private void runShooter() {
